@@ -171,6 +171,106 @@ struct PlainClientTests {
         let raw = try await client.path("users").path(1).noAuth().get().raw()
         #expect(raw.isSuccess)
     }
+
+}
+
+// MARK: - SSE Stream Tests
+
+@Suite("SSE Stream")
+struct SSEStreamTests {
+
+    @Test("sseStream parses W3C standard events correctly")
+    func parsesSSE() async throws {
+        // A mock SSE payload covering:
+        // 1. Custom event types
+        // 2. Default event types
+        // 3. Multi-line data payloads
+        // 4. Ignored comment lines
+        let sseData = """
+        event: custom_event
+        data: chunk one
+        
+        data: multi-line
+        data: payload
+        
+        : this is a comment and should be ignored
+        
+        data: [DONE]
+        
+        """
+
+        ZIYONRestMock.reset()
+        ZIYONRestMock.stub(url: "\(baseURL)/stream") {
+            ZIYONRestMockResponse(
+                statusCode: 200,
+                body: Data(sseData.utf8),
+                headers: ["Content-Type": "text/event-stream"]
+            )
+        }
+
+        // Setup Auth Client with mock session to intercept the request
+        // (Assuming your auth builder exposes .session() similarly to the plain client)
+        let authClient = ZIYONRest
+            .auth(baseURL: baseURL)
+            .store(ZIYONRestMemoryStore())
+            // Inject the mock session if your builder supports it, otherwise
+            // URLProtocol.registerClass(ZIYONRestMock.self) globally handles it.
+            .client
+
+        let stream = try await authClient
+            .path("stream")
+            .get()
+            .sseStream()
+
+        var receivedEvents: [ZIYONServerSentEvent] = []
+        for try await event in stream {
+            receivedEvents.append(event)
+        }
+
+        // Verify we parsed exactly 3 valid events (the comment should be skipped)
+        #expect(receivedEvents.count == 3)
+
+        // 1. Verify custom event and single-line data
+        #expect(receivedEvents[0].event == "custom_event")
+        #expect(receivedEvents[0].data == "chunk one")
+
+        // 2. Verify default event fallback ("message") and multi-line data joined by \n
+        #expect(receivedEvents[1].event == "message")
+        #expect(receivedEvents[1].data == "multi-line\npayload")
+
+        // 3. Verify final termination signal
+        #expect(receivedEvents[2].event == "message")
+        #expect(receivedEvents[2].data == "[DONE]")
+    }
+
+    @Test("sseStream throws on non-200 HTTP response")
+    func throwsHTTPError() async throws {
+        ZIYONRestMock.reset()
+        ZIYONRestMock.stub(url: "\(baseURL)/stream/error") {
+            ZIYONRestMockResponse(statusCode: 401, body: nil)
+        }
+
+        let authClient = ZIYONRest
+            .auth(baseURL: baseURL)
+            .store(ZIYONRestMemoryStore())
+            .client
+
+        do {
+            let stream = try await authClient.path("stream/error").get().sseStream()
+
+            // Iterate the stream to trigger the execution
+            for try await _ in stream {
+                Issue.record("Stream should not yield values on 401")
+            }
+            Issue.record("Expected stream to throw ZIYONRestError.httpError")
+        } catch let error as ZIYONRestError {
+            if case .httpError(let code, _) = error {
+                #expect(code == 401)
+            } else {
+                Issue.record("Wrong error type: \(error)")
+            }
+        }
+    }
 }
 
 // MARK: - Config tests

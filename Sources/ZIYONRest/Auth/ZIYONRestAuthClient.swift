@@ -399,3 +399,91 @@ public struct ZIYONRestAuthPendingRequest: Sendable {
         return result
     }
 }
+
+// MARK: - Server-Sent Events (SSE) Models & Extension
+
+extension ZIYONRestAuthPendingRequest {
+
+    /// Executes the request and parses a standard Server-Sent Events (SSE) stream.
+    /// Yields fully formed events as they are received from the server.
+    public func sseStream() async throws -> AsyncThrowingStream<ZIYONServerSentEvent, Error> {
+
+        let session = try await builder.client.currentSession()
+        let token = builder.context.skipAuth ? nil : session?.token
+
+        // 1. Resolve the URLRequest locally (URLRequest is a value type and safe to send)
+        var request = try builder.context.buildRequest(authToken: token)
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+
+        // 2. Use makeStream() to separate the stream from the continuation
+        let (stream, continuation) = AsyncThrowingStream<ZIYONServerSentEvent, Error>.makeStream()
+
+        // 3. Spin up the Task. The compiler now explicitly knows we are only
+        // capturing the Sendable 'continuation' and value-type 'request'.
+        let task = Task {
+            do {
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    throw ZIYONRestError.httpError(statusCode: httpResponse.statusCode, body: Data())
+                }
+
+                var currentEvent: String? = "message"
+                var currentData: [String] = []
+                var currentId: String? = nil
+                var currentRetry: Int? = nil
+
+                for try await line in bytes.lines {
+                    if line.isEmpty {
+                        if !currentData.isEmpty {
+                            let event = ZIYONServerSentEvent(
+                                event: currentEvent,
+                                data: currentData.joined(separator: "\n"),
+                                id: currentId,
+                                retry: currentRetry
+                            )
+                            continuation.yield(event)
+                        }
+
+                        currentEvent = "message"
+                        currentData = []
+                        continue
+                    }
+
+                    let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard let field = parts.first else { continue }
+
+                    var value = parts.count > 1 ? String(parts[1]) : ""
+                    if value.hasPrefix(" ") { value.removeFirst() }
+
+                    switch field {
+                    case "event": currentEvent = value
+                    case "data":  currentData.append(value)
+                    case "id":    currentId = value
+                    case "retry": currentRetry = Int(value)
+                    case "":      continue
+                    default:      continue
+                    }
+                }
+
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+
+        // 4. Securely bind cancellation outside the Task boundary
+        continuation.onTermination = { @Sendable _ in
+            task.cancel()
+        }
+
+        // 5. Return the stream to the caller
+        return stream
+    }
+
+}

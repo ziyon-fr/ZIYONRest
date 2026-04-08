@@ -7,6 +7,19 @@ ZIYONRest uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+
+## [1.1.0] – 2026-04-08
+
+### Added
+ - Native Server-Sent Events (SSE) streaming support via the `.sseStream() terminal method on `ZIYONRestAuthPendingRequest`.
+ 
+- `ZIYONServerSentEvent` struct representing fully W3C-compliant SSE payloads (handling custom events, multi-line data, and comments).
+
+- Swift Testing suite coverage for SSE parsing, stream execution, and HTTP error handling.
+
+### Changed
+- SSE implementation utilizes `AsyncThrowingStream.makeStream()` to guarantee Swift 6 strict concurrency safety and prevent region-based isolation data race warnings.
+
 ## [1.0.0] – 2025-04-08
 
 ### Added

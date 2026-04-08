@@ -290,7 +290,44 @@ let head = try await client.path("v1/health").head().raw()
 let options = try await client.path("v1/products").options().raw()
 print(options.header("allow") ?? "none")
 ```
+---
 
+## Server-Sent Events (SSE)
+
+ZIYONRest provides native, W3C-compliant Server-Sent Events (SSE) streaming. It handles connection stability, parses multi-line data payloads, and surfaces custom event types safely across Swift 6 concurrency boundaries.
+
+Call `.sseStream()` on any pending request to receive an `AsyncThrowingStream<ZIYONServerSentEvent, Error>`.
+
+```swift
+// 1. Initiate the SSE Stream
+let stream = try await auth
+    .path("v1/ai/generate")
+    .post(body: ["prompt": "Hello!"])
+    .sseStream()
+
+// 2. Iterate through events in real-time
+for try await event in stream {
+    
+    // Check for domain-specific termination signals
+    if event.data == "[DONE]" {
+        break 
+    }
+    
+    // Handle custom event types (defaults to "message")
+    if event.event == "error_alert" {
+        print("Server error: \(event.data ?? "")")
+        continue
+    }
+    
+    // Decode your payload
+    if let dataString = event.data,
+       let data = dataString.data(using: .utf8) {
+        let chunk = try JSONDecoder().decode(AIChunk.self, from: data)
+        print(chunk.text, terminator: "")
+    }
+}
+
+```
 ---
 
 ## Multipart Uploads
@@ -475,7 +512,8 @@ import SwiftUI
 import ZIYONRest
 
 @MainActor
-final class ProductViewModel: ObservableObject {
+@Observable
+final class ProductObserver {
     @Published var products: [Product] = []
     @Published var error: String?
 
@@ -498,10 +536,10 @@ final class ProductViewModel: ObservableObject {
 }
 
 struct ProductListView: View {
-    @StateObject private var vm: ProductViewModel
+    @State private var vm: ProductObserver
 
     init(auth: ZIYONRestAuthClient) {
-        _vm = StateObject(wrappedValue: ProductViewModel(auth: auth))
+        _vm = StateObject(wrappedValue: ProductObserver(auth: auth))
     }
 
     var body: some View {
