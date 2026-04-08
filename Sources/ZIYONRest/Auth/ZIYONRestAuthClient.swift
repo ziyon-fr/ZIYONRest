@@ -487,3 +487,84 @@ extension ZIYONRestAuthPendingRequest {
     }
 
 }
+
+// MARK: - Plain Client SSE Extension
+
+extension ZIYONRestPendingRequest {
+
+    /// Executes the request and parses a standard Server-Sent Events (SSE) stream.
+    /// Yields fully formed events as they are received from the server.
+    public func sseStream() async throws -> AsyncThrowingStream<ZIYONServerSentEvent, Error> {
+
+        // The plain client doesn't manage sessions, so we pass nil for the token
+        var request = try builder.context.buildRequest(authToken: nil)
+
+        // Force headers required for a stable SSE connection
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+
+        let (stream, continuation) = AsyncThrowingStream<ZIYONServerSentEvent, Error>.makeStream()
+
+        let task = Task {
+            do {
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    throw ZIYONRestError.httpError(statusCode: httpResponse.statusCode, body: Data())
+                }
+
+                var currentEvent: String? = "message"
+                var currentData: [String] = []
+                var currentId: String? = nil
+                var currentRetry: Int? = nil
+
+                for try await line in bytes.lines {
+                    if line.isEmpty {
+                        if !currentData.isEmpty {
+                            let event = ZIYONServerSentEvent(
+                                event: currentEvent,
+                                data: currentData.joined(separator: "\n"),
+                                id: currentId,
+                                retry: currentRetry
+                            )
+                            continuation.yield(event)
+                        }
+
+                        currentEvent = "message"
+                        currentData = []
+                        continue
+                    }
+
+                    let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard let field = parts.first else { continue }
+
+                    var value = parts.count > 1 ? String(parts[1]) : ""
+                    if value.hasPrefix(" ") { value.removeFirst() }
+
+                    switch field {
+                    case "event": currentEvent = value
+                    case "data":  currentData.append(value)
+                    case "id":    currentId = value
+                    case "retry": currentRetry = Int(value)
+                    case "":      continue
+                    default:      continue
+                    }
+                }
+
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+
+        continuation.onTermination = { @Sendable _ in
+            task.cancel()
+        }
+
+        return stream
+    }
+}

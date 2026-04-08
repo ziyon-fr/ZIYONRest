@@ -7,6 +7,10 @@ ZIYONRest uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.1] – 2026-04-08
+
+### Fixed
+- Added missing `.sseStream()` support to the plain `ZIYONRestPendingRequest` client to ensure parity with the authenticated client.
 
 ## [1.1.0] – 2026-04-08
 
